@@ -1641,6 +1641,7 @@ function EstructuraModule({ level, apiKey, onBack, addSession, onNeedApiKey }) {
   const [bufVersion, setBufVersion] = useState(0);
   const genIdxRef     = useRef(0);
   const generatingRef = useRef(false);
+  const usedUtterancesRef = useRef([]); // track phrases used this session
 
   const LEVEL_GUIDANCE = {
     A1: 'WORD LIMIT: 3–5 words maximum — count before writing. Present tense only. No subordinate clauses. Core vocabulary only (top 500 frequency words). Single clitics only (me gusta, se llama). No idioms. No contracted speech. Example: "Quiero un café."',
@@ -1728,13 +1729,16 @@ EXAMPLES (copy this style exactly):
     const structureMap = STRUCTURE_MAPS[level];
 
     const recent = getRecent();
+    const usedList = usedUtterancesRef.current.length > 0
+      ? `\n\nDO NOT REUSE these utterances or their sentence structures from the current session:\n${usedUtterancesRef.current.map((u,i)=>`${i+1}. ${u}`).join('\n')}`
+      : '';
     const system = `You are an expert Latin American Spanish linguistics teacher creating graded listening comprehension questions. You MUST follow the grammar structure map for the selected level exactly. Return ONLY a valid JSON object — no markdown, no code fences, no commentary.`;
 
     const prompt = `Create 1 Latin American Spanish listening comprehension question.
 LEVEL: ${level} CEFR
 CATEGORY TO FEATURE: "${cat}"
 WORD LIMIT: ${wordLimit} words maximum — count every word before writing, reject and rewrite if over limit
-${vocabInstruction(level)}${avoidRepeatInstruction(recent)}
+${vocabInstruction(level)}${avoidRepeatInstruction(recent)}${usedList}
 
 ${structureMap}
 
@@ -1777,11 +1781,21 @@ The three wrong options should differ in meaning (wrong subject, tense, or inter
         throw new Error(`utterance too long (${wordCount} words) after 3 retries`);
       }
 
+      // Shuffle choices so correct answer isn't always option A
+      const options = p.english_options.slice(0, 4);
+      const correctText = options[Number(p.correct_index)];
+      for (let i = options.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [options[i], options[j]] = [options[j], options[i]];
+      }
+      const correctIdx = options.indexOf(correctText);
+
+      usedUtterancesRef.current.push(p.utterance);
       addItems([p.utterance]);
       return {
         utterance:   p.utterance,
-        choices:     p.english_options,
-        correct:     Number(p.correct_index),
+        choices:     options,
+        correct:     correctIdx,
         explanation: p.explanation ?? '',
         category:    p.weak_tag ?? cat,
       };
@@ -2460,7 +2474,11 @@ Return ONLY this JSON:
 }
 
 RULES:
-- All 4 options (target + 3 distractors) must be real Spanish words or natural Spanish phrases
+- All 4 options (target + 3 distractors) must be real Spanish words or natural Spanish phrases that a native speaker would immediately recognize
+- NEVER split a single word with a space — "ca rro" is NOT a valid distractor for "carro". If you cannot find a real similar word, use a word from the same semantic field instead
+- NEVER invent non-words, partial words, or syllables — every option must exist in a Spanish dictionary
+- For minimal pair distractors, verify the distractor is a real word: carro→caro ✓, perro→pero ✓, but "ca rro" ✗ (not a word)
+- If you cannot find 3 real phonetically-similar Spanish words, use real words that begin with the same syllable or are from the same topic as the sentence
 - ${spec.distractors}
 - The sentence in context must make only the target word correct
 - In Latin American Spanish: 's','c','z' all sound like /s/ (no Castilian th-sound); 'll' and 'y' merge as /ʝ/ in most regions; 'b' and 'v' are identical; 'h' is silent
@@ -2483,8 +2501,12 @@ RULES:
       const cleanDistr  = p.distractors.slice(0, 3).map(d => cleanChoice(d));
       // Pad to 3 distractors if Claude returned fewer
       while (cleanDistr.length < 3) cleanDistr.push(['otra', 'más', 'igual'][cleanDistr.length]);
-      // Drop empty/duplicate distractors
-      const deduped = [...new Set([cleanTarget, ...cleanDistr])];
+      // Drop empty/duplicate distractors, and reject any distractor that is just
+      // the target word with a space inserted (e.g. "ca rro" for "carro")
+      const isSpaceSplit = (d) => d.replace(/\s+/g,'').toLowerCase() === cleanTarget.replace(/\s+/g,'').toLowerCase();
+      const validDistractors = cleanDistr.filter(d => d && !isSpaceSplit(d));
+      while (validDistractors.length < 3) validDistractors.push(['otra', 'más', 'igual', 'bien'].find(w => !validDistractors.includes(w) && w !== cleanTarget) || 'bien');
+      const deduped = [...new Set([cleanTarget, ...validDistractors])];
       if (deduped.length < 4) deduped.push(...['otra', 'más', 'igual', 'bien'].filter(w => !deduped.includes(w)));
       const finalDistractors = deduped.filter(w => w !== cleanTarget).slice(0, 3);
 
@@ -2928,8 +2950,8 @@ const DICTADO_SPECS  = {
   A1: { words:'3–5',   tenses:'present tense ONLY', vocab:'top 300 frequency words only', clauses:'no subordinate clauses', style:'concrete everyday meaning', examples:'"Tengo hambre." "¿Cómo te llamas?" "Ella es muy alta."' },
   A2: { words:'5–8',   tenses:'present or simple preterite only', vocab:'top 600 frequency words only', clauses:'single clause only', style:'everyday situations', examples:'"Fui al mercado ayer." "Me gusta mucho el café."' },
   B1: { words:'8–12',  tenses:'common tenses including imperfect and future', vocab:'everyday vocabulary and common expressions', clauses:'one subordinate clause allowed', style:'natural colloquial', examples:'"No vine porque me sentí muy mal." "¿Me puedes ayudar con esto?"' },
-  B2: { words:'12–18', tenses:'any tense including conditional', vocab:'natural speech including common idioms and clitic clusters', clauses:'multiple clauses', style:'fully natural conversational', examples:'"Se me olvidó decirte que mañana no voy a poder ir."' },
-  C1: { words:'18–25', tenses:'any including subjunctive and compound tenses', vocab:'idiomatic, regional Latin American expressions, reduced speech', clauses:'complex multi-clause', style:'native speed patterns with contractions and reductions', examples:'"Pa\' qué te digo que no si al final siempre termino haciendo lo que me pides."' },
+  B2: { words:'12–16', tenses:'any tense including conditional', vocab:'natural speech including common idioms and clitic clusters', clauses:'multiple clauses', style:'fully natural conversational', examples:'"Se me olvidó decirte que mañana no voy a poder ir."' },
+  C1: { words:'15–20', tenses:'any including subjunctive and compound tenses', vocab:'idiomatic, regional Latin American expressions, reduced speech', clauses:'complex multi-clause', style:'native speed patterns with contractions and reductions', examples:'"Pa\' qué te digo que no si al final siempre termino haciendo lo que me pides."' },
 };
 const SPECIAL_CHARS = ['á','é','í','ó','ú','ü','ñ','¿','¡'];
 const DICTADO_TOTAL = 5;
@@ -3040,7 +3062,7 @@ function DictadoModule({ level, apiKey, onBack, addSession, onNeedApiKey }) {
 TOPIC FOR THIS SENTENCE: ${topic} — the sentence must be about this topic.${usedList}${avoidRepeatInstruction(recent)}
 
 STRICT REQUIREMENTS:
-- Word count: ${spec.words} words (count carefully — contractions like "al" = 1 word)
+- Word count: ${spec.words} words HARD LIMIT — count every word before writing. If your sentence exceeds the limit, rewrite it shorter before responding. (contractions like "al" = 1 word)
 - Tenses: ${spec.tenses}
 - Vocabulary: ${spec.vocab}
 - ${vocabInstruction(level)}
@@ -3067,10 +3089,10 @@ Return ONLY this JSON:
       const p = JSON.parse(match[0]);
       if (!p.sentence || !p.sentenceEn) throw new Error('missing fields');
 
-      // Hard word count guard
+      // Hard word count guard — reject strictly over the max
       const wc  = p.sentence.trim().split(/\s+/).length;
       const [lo, hi] = spec.words.split('–').map(Number);
-      if (wc > hi + 3) {
+      if (wc > hi) {
         if (_attempt < 3) return generateOne(qNum, _attempt + 1);
         throw new Error(`sentence too long (${wc} words) after retries`);
       }
@@ -3496,6 +3518,8 @@ function DiscourseModule({ level, apiKey, onBack, addSession, onNeedApiKey }) {
   const [showPassage, setShowPassage]     = useState(false);
   const [errorMsg, setErrorMsg]   = useState('');
   const [submitError, setSubmitError] = useState('');
+  const defaultLength = (level === 'A1' || level === 'A2') ? 'short' : 'medium';
+  const [passageLength, setPassageLength] = useState(defaultLength);
   const playTimerRef   = useRef(null);
   const audioUrlRef    = useRef(null);
   const nextRef        = useRef(null);
@@ -3507,6 +3531,12 @@ function DiscourseModule({ level, apiKey, onBack, addSession, onNeedApiKey }) {
   const DISCOURSE_TOPICS = ['family','work','travel','food','health','weather','relationships','money','school','technology','sports','news','culture','humor'];
 
   const maxReplays = LEVEL_REPLAYS[level] ?? 0;
+
+  const LENGTH_SPECS = {
+    short:  { sentences: '3–5',   words: '30–55'   },
+    medium: { sentences: '6–10',  words: '60–110'  },
+    long:   { sentences: '12–16', words: '130–180' },
+  };
 
   const buildQSpec = () => {
     const base = [
@@ -3526,6 +3556,7 @@ function DiscourseModule({ level, apiKey, onBack, addSession, onNeedApiKey }) {
     isPregenRef.current = true;
     try {
       const spec   = PASSAGE_SPECS[level];
+      const lenSpec = LENGTH_SPECS[passageLength] || LENGTH_SPECS.medium;
       const topic  = DISCOURSE_TOPICS[topicIdxRef.current % DISCOURSE_TOPICS.length];
       topicIdxRef.current++;
       const recent = getRecent();
@@ -3533,8 +3564,8 @@ function DiscourseModule({ level, apiKey, onBack, addSession, onNeedApiKey }) {
       const prompt = `Create a Latin American Spanish listening passage for a ${level} CEFR learner.
 
 TOPIC: ${topic} — the passage must be specifically about this topic.
-Sentence count: ${spec.sentences} sentences — count before writing.
-Word count: ${spec.words} words — count before writing. Stay within range.
+Sentence count: ${lenSpec.sentences} sentences — count before writing.
+Word count: ${lenSpec.words} words — count before writing. Stay within range.
 Tenses: ${spec.tenses}
 Style: ${spec.style}${spec.critical ? `\nCRITICAL: ${spec.critical}` : ''}
 ${vocabInstruction(level)}${avoidRepeatInstruction(recent)}
@@ -3568,7 +3599,7 @@ ${buildQSpec()}
     } finally {
       isPregenRef.current = false;
     }
-  }, [apiKey, level, currentRate, fetchAudioStreaming, numQ, getRecent, addItems]);
+  }, [apiKey, level, passageLength, currentRate, fetchAudioStreaming, numQ, getRecent, addItems]);
 
   // ── Generate passage ──
   const generatePassage = useCallback(async () => {
@@ -3578,6 +3609,7 @@ ${buildQSpec()}
     if (audioUrlRef.current) { URL.revokeObjectURL(audioUrlRef.current); audioUrlRef.current = null; }
 
     const spec   = PASSAGE_SPECS[level];
+    const lenSpec = LENGTH_SPECS[passageLength] || LENGTH_SPECS.medium;
     const topic  = DISCOURSE_TOPICS[topicIdxRef.current % DISCOURSE_TOPICS.length];
     topicIdxRef.current++;
     const recent = getRecent();
@@ -3585,8 +3617,8 @@ ${buildQSpec()}
     const prompt = `Create a natural Latin American Spanish listening passage for a ${level} CEFR learner.
 
 TOPIC: ${topic} — the passage must be specifically about this topic.
-Sentence count: ${spec.sentences} sentences — count before writing.
-Word count: ${spec.words} words — count before writing. Stay within range.
+Sentence count: ${lenSpec.sentences} sentences — count before writing.
+Word count: ${lenSpec.words} words — count before writing. Stay within range.
 Tenses: ${spec.tenses}
 Style: ${spec.style}${spec.critical ? `\nCRITICAL: ${spec.critical}` : ''}
 ${vocabInstruction(level)}${avoidRepeatInstruction(recent)}
@@ -3622,7 +3654,7 @@ ${buildQSpec()}
       audioUrlRef.current = url;
       setPhase('listening');
     } catch(e) { setErrorMsg(e.message); setPhase('error'); }
-  }, [apiKey, level, maxReplays, currentRate, fetchAudioStreaming, onNeedApiKey, numQ, getRecent, addItems]);
+  }, [apiKey, level, passageLength, maxReplays, currentRate, fetchAudioStreaming, onNeedApiKey, numQ, getRecent, addItems]);
 
   // ── Playback ──
   const playPassage = useCallback(() => {
@@ -3716,6 +3748,7 @@ Return ONLY this JSON (questionResults must have exactly ${numQ} entries):
     const weakTags = result.weakTags || [];
     setSessionResult({ score, ...result });
     addSession({ module: 'discourse', level, score, weakTags, duration: null });
+    setShowPassage(true);
     setPhase('results');
   };
 
@@ -3788,6 +3821,28 @@ Return ONLY this JSON (questionResults must have exactly ${numQ} entries):
             ))}
           </div>
         )}
+      </div>
+
+      {/* Length selector */}
+      <div className="bg-slate-800/60 border border-slate-700/40 rounded-2xl p-4 space-y-2">
+        <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Passage length</p>
+        <div className="grid grid-cols-3 gap-2">
+          {[
+            { key: 'short',  label: 'Short',  sub: '3–5 sentences' },
+            { key: 'medium', label: 'Medium', sub: '6–10 sentences' },
+            { key: 'long',   label: 'Long',   sub: '12–16 sentences' },
+          ].map(({ key, label, sub }) => (
+            <button key={key} onClick={() => setPassageLength(key)}
+              className={`rounded-xl border p-3 text-center transition-all ${
+                passageLength === key
+                  ? 'bg-amber-500/20 border-amber-500/60 text-amber-300'
+                  : 'bg-slate-800/40 border-slate-700/30 text-slate-400 hover:border-slate-600'
+              }`}>
+              <div className="font-semibold text-sm">{label}</div>
+              <div className="text-[10px] mt-0.5 opacity-70">{sub}</div>
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Info grid */}
@@ -4044,22 +4099,34 @@ Return ONLY this JSON (questionResults must have exactly ${numQ} entries):
           </div>
         )}
 
-        {/* Reveal passage */}
+        {/* Passage transcript — auto-revealed after submit */}
         <div className="border border-slate-700/50 rounded-2xl overflow-hidden">
           <button
             onClick={() => setShowPassage(v => !v)}
             className="w-full flex items-center justify-between px-4 py-3.5 bg-slate-800/40 hover:bg-slate-800/60 transition-colors text-sm"
           >
-            <span className="text-slate-300 font-medium">{showPassage ? 'Hide' : 'Reveal'} full passage text</span>
+            <span className="text-slate-300 font-medium">{showPassage ? 'Hide' : 'Show'} full passage text</span>
             <div className={`w-4 h-4 text-slate-400 transition-transform ${showPassage ? 'rotate-90' : ''}`}><Icons.ChevronRight /></div>
           </button>
           {showPassage && (
-            <div className="p-4 bg-slate-900/50 border-t border-slate-700/40">
+            <div className="p-4 bg-slate-900/50 border-t border-slate-700/40 space-y-4">
+              {/* Large play button — listen while reading along */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleReplay}
+                  disabled={isPlaying}
+                  className={`w-12 h-12 rounded-full flex items-center justify-center text-white transition-all flex-shrink-0 ${
+                    isPlaying ? 'bg-amber-600/50 cursor-not-allowed' : 'bg-amber-500 hover:bg-amber-400 active:scale-95'
+                  }`}
+                >
+                  {isPlaying
+                    ? <div className="w-5 h-5 text-amber-200"><Icons.Volume /></div>
+                    : <svg viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 ml-0.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                  }
+                </button>
+                <span className="text-xs text-slate-400">{isPlaying ? 'Playing…' : 'Listen while reading'}</span>
+              </div>
               <p className="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap">{passage}</p>
-              <button onClick={() => { cancel(); speakSequence([{text:passage, rate:currentRate}], ()=>{}); }}
-                className="flex items-center gap-1.5 text-xs text-amber-400 hover:text-amber-300 mt-3 transition-colors">
-                <div className="w-3.5 h-3.5"><Icons.Volume /></div> Replay passage
-              </button>
             </div>
           )}
         </div>

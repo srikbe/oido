@@ -1,0 +1,128 @@
+HOW TO CREATE A DOUBLE-CLICKABLE OÍDO APP ON YOUR MAC
+======================================================
+
+This turns start-oido.sh into a real Mac app you can double-click
+from your Desktop or Dock — no terminal required.
+
+
+STEP 1 — Open Automator
+  Open Finder → Applications → Automator
+  (or press Cmd+Space and type "Automator")
+
+
+STEP 2 — Create a new Application
+  When Automator opens, click "New Document"
+  Choose "Application" from the list of document types
+  Click "Choose"
+
+
+STEP 3 — Add a "Run Shell Script" action
+  In the search box on the left, type: run shell script
+  Drag "Run Shell Script" into the empty workflow area on the right
+
+
+STEP 4 — Paste the script
+  In the shell script box, DELETE the default content (it says "cat")
+  Then paste the ENTIRE contents of start-oido.sh (see below)
+
+
+STEP 5 — Save as an app
+  Press Cmd+S (or File → Save)
+  Name it: Oído
+  Change the "Where" dropdown to: Desktop
+  Click Save
+
+  You now have Oído.app on your Desktop.
+  Double-click it any time to start the app and open it in your browser.
+
+
+STEP 6 (optional) — Add to Dock
+  Drag Oído.app from your Desktop into your Dock.
+
+
+STEP 7 (optional) — Give it a custom icon
+  Find any image you want to use as the icon (a PNG works best)
+  Open the image in Preview, press Cmd+A then Cmd+C to copy it
+  Right-click Oído.app → Get Info
+  Click the small icon in the top-left of the Get Info window
+  Press Cmd+V to paste your image as the new icon
+
+
+--------------------------------------------------------------
+CONTENTS OF start-oido.sh (paste this into Automator):
+--------------------------------------------------------------
+
+#!/usr/bin/env bash
+
+APP_DIR="/Users/sriprestonkulkarni/spanish-listening-app"
+
+# Kill anything on ports 3456 and 3457
+for PORT in 3456 3457; do
+  PID=$(lsof -ti tcp:$PORT 2>/dev/null)
+  if [ -n "$PID" ]; then
+    kill -9 $PID 2>/dev/null
+  fi
+done
+
+# Give ports a moment to release
+sleep 1
+
+# Start the API proxy server (must run from APP_DIR so dotenv finds .env)
+(cd "$APP_DIR" && node server.js) >> /tmp/oido-proxy.log 2>&1 &
+
+# Start the static file server
+/usr/local/bin/npx serve "$APP_DIR" --listen tcp://0.0.0.0:3456 --no-clipboard >> /tmp/oido-serve.log 2>&1 &
+
+# Wait for the static server to be ready (up to 10 seconds)
+for i in $(seq 1 10); do
+  sleep 1
+  STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3456/ 2>/dev/null)
+  if [ "$STATUS" = "200" ]; then
+    break
+  fi
+done
+
+# Open the app in the default browser
+open http://localhost:3456
+
+--------------------------------------------------------------
+
+ACCESSING FROM OTHER DEVICES ON THE SAME WIFI
+----------------------------------------------
+The server listens on all network interfaces (0.0.0.0:3456), so any
+device on your WiFi can reach it.
+
+1. Find your Mac's local IP address:
+     System Settings → Wi-Fi → Details → IP Address
+     (or run in Terminal: ipconfig getifaddr en0)
+   It will look like: 192.168.1.42
+
+2. On the other device (phone, tablet, etc.), open a browser and go to:
+     http://192.168.1.42:3456
+
+3. If the connection is refused, check the Mac firewall:
+     System Settings → Privacy & Security → Firewall
+     Click "Options…" and make sure incoming connections are not blocked
+     for Node.js / npx, or turn the firewall off temporarily to test.
+   If asked "Do you want the application node to accept incoming
+   network connections?" — always click Allow.
+
+4. The proxy server (port 3457) only needs to be reachable from the
+   Mac itself — the browser on the other device talks to port 3456
+   (static files), which then proxies API calls through the Mac.
+
+
+TROUBLESHOOTING
+---------------
+If double-clicking the app does nothing or gives a security warning:
+  → Right-click the app → Open → click "Open" in the dialog
+  → macOS only asks this once; after that, double-click works normally
+
+If the browser opens but shows "refused to connect":
+  → Wait 5 seconds and refresh — the server may still be starting
+  → Check /tmp/oido-proxy.log and /tmp/oido-serve.log for errors
+
+If you see "node: command not found" in the logs:
+  → The script uses the full path /usr/local/bin/npx but "node" relies
+    on your PATH. Fix by replacing "node" in the script with the full
+    path to node. Find it by running in Terminal:  which node

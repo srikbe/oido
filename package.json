@@ -1,0 +1,19 @@
+{
+  "name": "oido",
+  "version": "1.0.0",
+  "description": "Latin American Spanish listening fluency trainer",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "concurrently --names \"proxy,web\" --prefix-colors \"cyan,green\" \"node server.js\" \"serve . -l 3456\""
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "serve": "^14.2.3"
+  }
+}

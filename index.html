@@ -244,7 +244,8 @@ function useTTS() {
     return new Promise((resolve, reject) => {
       if (genRef.current !== myGen) { resolve(); return; }
       const audio = new Audio();
-      audio.crossOrigin = 'anonymous';
+      // blob: URLs are same-origin — setting crossOrigin breaks them on Safari
+      if (!url.startsWith('blob:')) audio.crossOrigin = 'anonymous';
       audio.preload = 'auto';
       currentAudioRef.current = audio;
       console.log('[TTS] playing audio, gen', myGen, 'url', url.slice(-20));
@@ -339,6 +340,14 @@ function useTTS() {
     }
   }, []);
 
+  const pauseAudio = useCallback(() => {
+    if (currentAudioRef.current) currentAudioRef.current.pause();
+  }, []);
+
+  const resumeAudio = useCallback(() => {
+    if (currentAudioRef.current) currentAudioRef.current.play().catch(() => {});
+  }, []);
+
   // Play a single Spanish word using ElevenLabs previous_text for language context.
   // previous_text "La palabra es" is sent as silent context — ElevenLabs uses it
   // to set prosody and detect Spanish, but does NOT speak it. Only the word plays.
@@ -375,6 +384,8 @@ function useTTS() {
     voiceLabel: 'multilingual v2',
     speakSequence,
     cancel,
+    pauseAudio,
+    resumeAudio,
     fetchAudioStreaming,
     playUrlDirect,
     speakWordOnly,
@@ -417,27 +428,27 @@ const LEVEL_ACTIVE = {
   C1:'bg-rose-500 text-white border-rose-400',
 };
 const MODULES = [
-  { id:'placement', title:'Vocabulario', subtitle:'Stage 1 — Vocabulary Placement',
+  { id:'placement', title:'Vocab Level Test', subtitle:'Stage 1 — Vocabulary Placement',
     description:"20 adaptive questions that find your vocabulary level and set your starting point for all other modules. Retake any time you level up.",
     icon:Icons.Headphones, color:'from-teal-500 to-emerald-600', accent:'text-teal-400',
     border:'border-teal-500/30', ring:'ring-teal-500/40', badge:'bg-teal-500/20 text-teal-300',
     skills:['Adaptive difficulty','Word recognition','Level calibration'] },
-  { id:'word-recognition', title:'Fonética', subtitle:'Stage 2 — Word Recognition',
+  { id:'word-recognition', title:'Words', subtitle:'Stage 2 — Word Recognition',
     description:"Hear a sentence and identify the exact word spoken. Trains phonetic discrimination — distinguishing sounds that confuse learners at native speed.",
     icon:Icons.Zap, color:'from-sky-500 to-cyan-600', accent:'text-sky-400',
     border:'border-sky-500/30', ring:'ring-sky-500/40', badge:'bg-sky-500/20 text-sky-300',
     skills:['Phoneme discrimination','Minimal pairs','Sound-to-word mapping'] },
-  { id:'transcription', title:'Dictado', subtitle:'Stage 3 — Sentence Transcription',
-    description:"Hear a Spanish sentence and type exactly what you heard. The most demanding decoding task — full word-level accuracy required.",
-    icon:Icons.BookOpen, color:'from-rose-500 to-pink-600', accent:'text-rose-400',
-    border:'border-rose-500/30', ring:'ring-rose-500/40', badge:'bg-rose-500/20 text-rose-300',
-    skills:['Full transcription','Spelling accuracy','Accent recognition'] },
-  { id:'structure', title:'Estructura', subtitle:'Stage 4 — Structure',
+  { id:'structure', title:'Phrases', subtitle:'Stage 3 — Phrase Comprehension',
     description:"Understand natural utterances, phrases, and expressions. Meaning that doesn't map directly to English.",
     icon:Icons.BookOpen, color:'from-violet-600 to-purple-700', accent:'text-violet-400',
     border:'border-violet-500/30', ring:'ring-violet-500/40', badge:'bg-violet-500/20 text-violet-300',
     skills:['Phrase comprehension','Idiomatic expressions','Grammar in context'] },
-  { id:'discourse', title:'Discurso', subtitle:'Stage 4 — Discourse',
+  { id:'transcription', title:'Sentences', subtitle:'Stage 4 — Sentence Transcription',
+    description:"Hear a Spanish sentence and type exactly what you heard. The most demanding decoding task — full word-level accuracy required.",
+    icon:Icons.BookOpen, color:'from-rose-500 to-pink-600', accent:'text-rose-400',
+    border:'border-rose-500/30', ring:'ring-rose-500/40', badge:'bg-rose-500/20 text-rose-300',
+    skills:['Full transcription','Spelling accuracy','Accent recognition'] },
+  { id:'discourse', title:'Speeches and Dialogues', subtitle:'Stage 5 — Extended Listening',
     description:"Follow extended natural speech at conversational speed — as in real TV, film, and conversation. The core listening workout.",
     icon:Icons.Zap, color:'from-amber-500 to-orange-600', accent:'text-amber-400',
     border:'border-amber-500/30', ring:'ring-amber-500/40', badge:'bg-amber-500/20 text-amber-300',
@@ -502,41 +513,16 @@ function ApiKeyModal({ onSave, onDismiss }) {
 
 // ─── ONBOARDING MODAL ────────────────────────────────────────────────────────
 function OnboardingModal({ onDismiss }) {
-  const stages = [
-    { mod: MODULES[0], step:'1',
-      desc:"Hear high-frequency words in isolation and inside carrier sentences. Train your ear to recognize sounds before seeing them written." },
-    { mod: MODULES[1], step:'2',
-      desc:"Decode complete utterances as actually spoken — clitic clusters, idioms, ellipsis, and expressions that don't translate literally." },
-    { mod: MODULES[2], step:'3',
-      desc:"Follow extended passages at native conversational speed. Process audio in real time without text support, just like watching a film." },
-  ];
   return (
     <div className="fixed inset-0 bg-black/85 backdrop-blur-sm flex items-end sm:items-center justify-center z-50 p-4">
       <div className="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-sm slide-up overflow-hidden">
-        <div className="p-6 text-center border-b border-slate-700/50">
+        <div className="p-6 text-center">
           <div className="inline-flex items-center gap-2 bg-brand-500/10 border border-brand-500/20 rounded-full px-3 py-1 mb-3">
             <div className="w-3 h-3 text-brand-400"><Icons.Sparkles /></div>
             <span className="text-brand-400 text-[10px] font-bold uppercase tracking-wider">Audio-first training</span>
           </div>
           <h1 className="text-xl font-bold text-white mb-1">Welcome to Oído</h1>
-          <p className="text-slate-400 text-xs leading-relaxed">A three-stage system for Latin American Spanish listening fluency. Work through the stages in order — each builds on the previous one.</p>
-        </div>
-        <div className="p-4 space-y-2.5">
-          {stages.map(({ mod, step, desc }) => {
-            const MIcon = mod.icon;
-            return (
-              <div key={mod.id} className={`bg-slate-900/60 border ${mod.border} rounded-xl p-3.5 flex gap-3`}>
-                <div className={`w-9 h-9 rounded-xl bg-gradient-to-br ${mod.color} p-2 flex-shrink-0`}><MIcon /></div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Stage {step}</span>
-                    <span className={`text-sm font-semibold ${mod.accent}`}>{mod.title}</span>
-                  </div>
-                  <p className="text-slate-400 text-xs leading-relaxed">{desc}</p>
-                </div>
-              </div>
-            );
-          })}
+          <p className="text-slate-400 text-xs leading-relaxed">A five-stage system for Latin American Spanish listening fluency. Work through the stages in order — each builds on the previous one.</p>
         </div>
         <div className="px-4 pb-5">
           <button onClick={onDismiss}
@@ -1299,7 +1285,7 @@ Return JSON:
             <Icons.Headphones />
           </div>
           <h1 className="text-2xl font-bold text-white mb-1">Vocabulario</h1>
-          <p className="text-slate-400 text-sm mb-3">Stage 1 — Word Recognition</p>
+          <p className="text-slate-400 text-sm mb-3">Vocab Level Test</p>
           <span className={`inline-block text-xs font-semibold px-3 py-1 rounded-full border ${LEVEL_COLORS[level]}`}>{level}</span>
         </div>
 
@@ -1642,6 +1628,10 @@ function EstructuraModule({ level, apiKey, onBack, addSession, onNeedApiKey }) {
   const [sessionResult, setSessionResult] = useState(null);
   const [errorMsg, setErrorMsg]     = useState('');
   const [isPlaying, setIsPlaying]   = useState(false);
+  const [askOpen, setAskOpen]       = useState(false);
+  const [askQuestion, setAskQuestion] = useState('');
+  const [askAnswer, setAskAnswer]   = useState('');
+  const [askLoading, setAskLoading] = useState(false);
   const playTimerRef  = useRef(null);
   const { speakSequence, cancel }   = useTTS();
   const { addItems, getRecent }     = useContentHistory();
@@ -1894,6 +1884,7 @@ The three wrong options should differ in meaning (wrong subject, tense, or inter
 
   const handleNext = () => {
     const nextIdx = currentIdx + 1;
+    setAskOpen(false); setAskQuestion(''); setAskAnswer('');
     if (nextIdx >= TOTAL_Q) { scoreSession(); return; }
     setCurrentIdx(nextIdx);
     setSelectedAnswer(null);
@@ -1901,6 +1892,25 @@ The three wrong options should differ in meaning (wrong subject, tense, or inter
       setPhase('question');
     } else {
       setPhase('loading_next');
+    }
+  };
+
+  const handleAskClaude = async () => {
+    const cur = bufRef.current[currentIdx];
+    if (!askQuestion.trim() || !cur) return;
+    setAskLoading(true);
+    setAskAnswer('');
+    try {
+      const context = `Spanish utterance: "${cur.utterance}"\nCorrect meaning: "${cur.choices[cur.correct]}"\nExplanation: ${cur.explanation}`;
+      const raw = await callClaude(apiKey,
+        'You are a concise Latin American Spanish language tutor. Answer the student\'s follow-up question in 2–4 sentences. Be specific and practical.',
+        `${context}\n\nStudent question: ${askQuestion.trim()}`
+        , 300);
+      setAskAnswer(raw.trim());
+    } catch(e) {
+      setAskAnswer('Sorry, something went wrong. Try again.');
+    } finally {
+      setAskLoading(false);
     }
   };
 
@@ -1967,7 +1977,7 @@ The three wrong options should differ in meaning (wrong subject, tense, or inter
       <div className="text-center py-4">
         <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-600 to-purple-700 p-4 mx-auto mb-4"><Icons.BookOpen /></div>
         <h1 className="text-2xl font-bold text-white mb-1">Estructura</h1>
-        <p className="text-slate-400 text-sm mb-3">Stage 2 — Utterance Comprehension</p>
+        <p className="text-slate-400 text-sm mb-3">Phrases</p>
         <span className={`inline-block text-xs font-semibold px-3 py-1 rounded-full border ${LEVEL_COLORS[level]}`}>{level}</span>
       </div>
       <div className="bg-slate-800/60 border border-slate-700/40 rounded-2xl overflow-hidden">
@@ -2163,23 +2173,18 @@ The three wrong options should differ in meaning (wrong subject, tense, or inter
           <div className="text-center">
             <p className="text-[10px] text-violet-400/60 uppercase tracking-widest mb-2">Utterance</p>
             <div className="text-xl font-bold text-white leading-relaxed mb-3">"{q.utterance}"</div>
-            <button onClick={() => handleReplay(false)} className="flex items-center gap-2 mx-auto text-xs text-violet-400 hover:text-violet-300 transition-colors">
-              <div className="w-3.5 h-3.5"><Icons.Volume /></div> Replay
+            <button onClick={() => handleReplay(false)}
+              className="w-12 h-12 mx-auto rounded-full flex items-center justify-center bg-violet-500/20 hover:bg-violet-500/40 active:scale-95 transition-all">
+              <svg viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 text-violet-400 ml-0.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
             </button>
           </div>
         ) : (
           <div className="text-center">
             <p className="text-violet-300/60 text-xs mb-4">{isPlaying ? 'Listening…' : 'What did they say?'}</p>
-            <div className="flex gap-2 justify-center">
-              <button onClick={() => handleReplay(false)}
-                className="flex items-center gap-1.5 bg-violet-500/20 hover:bg-violet-500/30 border border-violet-500/30 text-violet-300 text-xs font-medium px-3 py-2 rounded-lg transition-colors">
-                <div className="w-3.5 h-3.5"><Icons.RotateCcw /></div> Replay
-              </button>
-              <button onClick={() => handleReplay(true)}
-                className="flex items-center gap-1.5 bg-slate-700/50 hover:bg-slate-700 border border-slate-600/50 text-slate-300 text-xs font-medium px-3 py-2 rounded-lg transition-colors">
-                <div className="w-3.5 h-3.5"><Icons.Volume /></div> Slower
-              </button>
-            </div>
+            <button onClick={() => handleReplay(false)}
+              className="w-16 h-16 mx-auto rounded-full flex items-center justify-center bg-violet-500/20 hover:bg-violet-500/40 hover:scale-105 active:scale-95 transition-all">
+              <svg viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8 text-violet-400 ml-0.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            </button>
           </div>
         )}
         <div className="flex items-center justify-center gap-3 mt-3 pt-3 border-t border-violet-500/20">
@@ -2194,19 +2199,30 @@ The three wrong options should differ in meaning (wrong subject, tense, or inter
       <p className="text-slate-300 text-sm font-medium text-center">{isRevealed ? 'Result' : 'What does this mean?'}</p>
       <div className="space-y-2.5">
         {q.choices.map((choice, idx) => {
+          const isAnswering = phase === 'answering';
+          const isWrong = idx !== q.correct;
+          const isSelected = idx === selectedAnswer;
+          // During answering phase: flash correct green, selected wrong red, others fade out
           let style = 'bg-slate-800/60 border-slate-700/50 text-slate-200 hover:bg-slate-800 hover:border-slate-600';
           let icon = null;
+          let extraCls = '';
+          if (isAnswering) {
+            if (idx === q.correct) { style='bg-green-500/15 border-green-500/50 text-green-200'; }
+            else if (isSelected) { style='bg-red-500/15 border-red-500/40 text-red-300'; }
+            else { extraCls = 'opacity-0'; style='bg-slate-800/30 border-slate-700/30 text-slate-500'; }
+          }
           if (isRevealed) {
-            if (idx === q.correct) { style='bg-green-500/15 border-green-500/50 text-green-200'; icon=<div className="w-4 h-4 text-green-400 flex-shrink-0"><Icons.Check /></div>; }
-            else if (idx === selectedAnswer) { style='bg-red-500/15 border-red-500/40 text-red-300'; icon=<div className="w-4 h-4 text-red-400 flex-shrink-0"><Icons.X /></div>; }
-            else { style='bg-slate-800/30 border-slate-700/30 text-slate-500'; }
+            // Hide wrong choices entirely — explanation fills the space
+            if (isWrong) return null;
+            style='bg-green-500/15 border-green-500/50 text-green-200';
+            icon=<div className="w-4 h-4 text-green-400 flex-shrink-0"><Icons.Check /></div>;
           }
           return (
-            <button key={idx} onClick={() => !isRevealed && handleAnswer(idx)} disabled={isRevealed}
-              className={`choice-btn w-full flex items-center gap-3 rounded-xl border px-4 py-3.5 text-left transition-all ${style} ${!isRevealed?'cursor-pointer':'cursor-default'}`}>
+            <button key={idx} onClick={() => !isRevealed && !isAnswering && handleAnswer(idx)} disabled={isRevealed || isAnswering}
+              className={`choice-btn w-full flex items-center gap-3 rounded-xl border px-4 py-3.5 text-left transition-all duration-300 ${style} ${!isRevealed&&!isAnswering?'cursor-pointer':'cursor-default'} ${extraCls}`}>
               <span className={`w-6 h-6 rounded-lg flex-shrink-0 flex items-center justify-center text-xs font-bold border ${
-                isRevealed&&idx===q.correct?'bg-green-500/30 border-green-500/50 text-green-300'
-                :isRevealed&&idx===selectedAnswer?'bg-red-500/30 border-red-500/50 text-red-300'
+                (isRevealed||isAnswering)&&idx===q.correct?'bg-green-500/30 border-green-500/50 text-green-300'
+                :(isRevealed||isAnswering)&&isSelected?'bg-red-500/30 border-red-500/50 text-red-300'
                 :'bg-slate-700/60 border-slate-600/50 text-slate-400'}`}>{CHOICE_LABELS[idx]}</span>
               <span className="text-sm flex-1">{choice}</span>
               {icon}
@@ -2215,9 +2231,15 @@ The three wrong options should differ in meaning (wrong subject, tense, or inter
         })}
       </div>
 
-      {/* Reveal: literal trap + explanation */}
+      {/* Reveal: wrong-answer result + explanation (slides in where wrong choices were) */}
       {isRevealed && (
         <div className="slide-up space-y-2.5">
+          {selectedAnswer !== q.correct && (
+            <div className="bg-red-500/10 border border-red-500/25 rounded-xl px-4 py-3 flex items-center gap-3">
+              <div className="w-4 h-4 text-red-400 flex-shrink-0"><Icons.X /></div>
+              <span className="text-red-300 text-sm flex-1">{q.choices[selectedAnswer]}</span>
+            </div>
+          )}
           {q.literal && (
             <div className="bg-red-500/8 border border-red-500/20 rounded-xl p-3.5">
               <div className="flex gap-2 items-start">
@@ -2241,6 +2263,40 @@ The three wrong options should differ in meaning (wrong subject, tense, or inter
             {q.feature && <p className="text-[10px] text-slate-500 mt-2">Pattern: <span className="text-slate-400 font-medium">{q.feature}</span></p>}
           </div>
         </div>
+
+        {/* Ask Claude */}
+        <div className="bg-slate-800/40 border border-violet-500/20 rounded-xl overflow-hidden">
+          <button
+            onClick={() => { setAskOpen(v => !v); setAskAnswer(''); }}
+            className="w-full flex items-center gap-2 px-3.5 py-2.5 text-xs text-violet-400 hover:text-violet-300 transition-colors"
+          >
+            <div className="w-3.5 h-3.5"><Icons.Sparkles /></div>
+            Ask Claude a follow-up
+            <span className="ml-auto">{askOpen ? '▲' : '▼'}</span>
+          </button>
+          {askOpen && (
+            <div className="border-t border-violet-500/15 px-3.5 pb-3.5 pt-2.5 space-y-2">
+              <input
+                type="text"
+                value={askQuestion}
+                onChange={e => setAskQuestion(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && !askLoading && handleAskClaude()}
+                placeholder="e.g. When do you use this structure?"
+                className="w-full bg-slate-900/60 border border-slate-700/50 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50"
+              />
+              <button
+                onClick={handleAskClaude}
+                disabled={askLoading || !askQuestion.trim()}
+                className="w-full bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white text-xs font-semibold py-2 rounded-lg transition-colors"
+              >
+                {askLoading ? 'Asking…' : 'Ask →'}
+              </button>
+              {askAnswer && (
+                <p className="text-slate-200 text-xs leading-relaxed pt-1">{askAnswer}</p>
+              )}
+            </div>
+          )}
+        </div>
       )}
 
       {isRevealed && (
@@ -2256,7 +2312,7 @@ The three wrong options should differ in meaning (wrong subject, tense, or inter
 const SPEED_STEPS   = [0.70,0.75,0.80,0.85,0.90,0.95,1.0,1.05,1.1,1.15,1.2];
 const LEVEL_SPEEDS  = { A1:0.75, A2:0.80, B1:0.90, B2:1.0, C1:1.1 };
 const ESTRUCTURA_SPEEDS = { A1:0.70, A2:0.75, B1:0.82, B2:0.90, C1:0.95 };
-const LEVEL_REPLAYS = { A1:2, A2:2, B1:1, B2:1, C1:0 };
+const LEVEL_REPLAYS = { A1:99, A2:99, B1:99, B2:99, C1:99 };
 const PASSAGE_SPECS = {
   A1: {
     sentences: '2–3', words: '20–30',
@@ -2637,7 +2693,7 @@ RULES:
       <div className="text-center py-4">
         <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-sky-500 to-cyan-600 p-4 mx-auto mb-4"><Icons.Zap /></div>
         <h1 className="text-2xl font-bold text-white mb-1">Fonética</h1>
-        <p className="text-slate-400 text-sm mb-3">Stage 2 — Word Recognition</p>
+        <p className="text-slate-400 text-sm mb-3">Words</p>
         <span className={`inline-block text-xs font-semibold px-3 py-1 rounded-full border ${LEVEL_COLORS[level]}`}>{level}</span>
       </div>
 
@@ -2874,7 +2930,7 @@ const DICTADO_SPECS  = {
   C1: { words:'18–25', tenses:'any including subjunctive and compound tenses', vocab:'idiomatic, regional Latin American expressions, reduced speech', clauses:'complex multi-clause', style:'native speed patterns with contractions and reductions', examples:'"Pa\' qué te digo que no si al final siempre termino haciendo lo que me pides."' },
 };
 const SPECIAL_CHARS = ['á','é','í','ó','ú','ü','ñ','¿','¡'];
-const DICTADO_TOTAL = 8;
+const DICTADO_TOTAL = 5;
 
 // Fuzzy word match: strip accents + punctuation, lowercase compare
 function stripAccents(s) {
@@ -2885,19 +2941,59 @@ function tokenizeForMatch(sentence) {
 }
 
 function alignWords(original, typed) {
-  const origTokens = tokenizeForMatch(original);
+  const origTokens  = tokenizeForMatch(original);
   const typedTokens = tokenizeForMatch(typed);
-  return origTokens.map((orig, i) => {
-    const t = typedTokens[i];
-    if (!t) return { word: orig, status: 'missing' };
-    const origStripped  = stripAccents(orig);
-    const typedStripped = stripAccents(t);
-    if (origStripped === typedStripped) {
-      const hasAccentDiff = orig.normalize('NFD') !== t.normalize('NFD') && orig !== t;
-      return { word: orig, typed: t, status: hasAccentDiff ? 'accent' : 'correct' };
+  const m = origTokens.length, n = typedTokens.length;
+
+  // LCS DP table — match by stripped form so accent differences still align
+  const dp = Array.from({ length: m + 1 }, () => new Int32Array(n + 1));
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = stripAccents(origTokens[i-1]) === stripAccents(typedTokens[j-1])
+        ? dp[i-1][j-1] + 1
+        : Math.max(dp[i-1][j], dp[i][j-1]);
+
+  // Backtrack to get edit operations
+  const ops = [];
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && stripAccents(origTokens[i-1]) === stripAccents(typedTokens[j-1])) {
+      ops.unshift({ type: 'match', oi: i-1, ti: j-1 }); i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) {
+      ops.unshift({ type: 'ins', ti: j-1 }); j--;  // extra typed word — ignore for scoring
+    } else {
+      ops.unshift({ type: 'del', oi: i-1 }); i--;  // original word absent in typed
     }
-    return { word: orig, typed: t, status: 'wrong' };
-  });
+  }
+
+  // Build result — consecutive del/ins pairs become substitutions
+  const result = [];
+  let k = 0;
+  while (k < ops.length) {
+    if (ops[k].type === 'match') {
+      const orig = origTokens[ops[k].oi], t = typedTokens[ops[k].ti];
+      const hasAccentDiff = orig.normalize('NFD') !== t.normalize('NFD') && orig !== t;
+      result.push({ word: orig, typed: t, status: hasAccentDiff ? 'accent' : 'correct' });
+      k++;
+    } else {
+      // Collect a contiguous block of del/ins ops and pair them as substitutions
+      const dels = [], ins = [];
+      while (k < ops.length && ops[k].type !== 'match') {
+        if (ops[k].type === 'del') dels.push(ops[k].oi);
+        else ins.push(ops[k].ti);
+        k++;
+      }
+      dels.forEach((oi, p) => {
+        const orig = origTokens[oi];
+        if (p < ins.length) {
+          result.push({ word: orig, typed: typedTokens[ins[p]], status: 'wrong' });
+        } else {
+          result.push({ word: orig, status: 'missing' });
+        }
+      });
+    }
+  }
+  return result;
 }
 
 function DictadoModule({ level, apiKey, onBack, addSession, onNeedApiKey }) {
@@ -2911,12 +3007,13 @@ function DictadoModule({ level, apiKey, onBack, addSession, onNeedApiKey }) {
   const [typedText, setTypedText]       = useState('');
   const [replayCount, setReplayCount]   = useState(0);
   const [isPlaying, setIsPlaying]       = useState(false);
+  const [isPaused, setIsPaused]         = useState(false);
   const [sessionResults, setSessionResults] = useState([]);
   const [sessionDone, setSessionDone]   = useState(null);
 
   const textareaRef = useRef(null);
   const playTimerRef = useRef(null);
-  const { speakSequence, cancel }       = useTTS();
+  const { speakSequence, cancel, pauseAudio, resumeAudio } = useTTS();
   const { addItems, getRecent }         = useContentHistory();
 
   // Prefetch buffer
@@ -3019,9 +3116,20 @@ Return ONLY this JSON:
     if (!q) return;
     clearTimeout(playTimerRef.current);
     setIsPlaying(true);
-    speakSequence([{ text: q.sentence, rate: currentRate }], () => setIsPlaying(false));
-    playTimerRef.current = setTimeout(() => setIsPlaying(false), 20000);
+    setIsPaused(false);
+    speakSequence([{ text: q.sentence, rate: currentRate }], () => { setIsPlaying(false); setIsPaused(false); });
+    playTimerRef.current = setTimeout(() => { setIsPlaying(false); setIsPaused(false); }, 20000);
   }, [speakSequence, currentRate, currentIdx]);
+
+  const handlePauseResume = () => {
+    if (isPaused) {
+      resumeAudio();
+      setIsPaused(false);
+    } else {
+      pauseAudio();
+      setIsPaused(true);
+    }
+  };
 
   useEffect(() => {
     if (phase === 'listening') {
@@ -3104,7 +3212,7 @@ Return ONLY this JSON:
       <div className="text-center py-4">
         <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-rose-500 to-pink-600 p-4 mx-auto mb-4"><Icons.BookOpen /></div>
         <h1 className="text-2xl font-bold text-white mb-1">Dictado</h1>
-        <p className="text-slate-400 text-sm mb-3">Stage 3 — Sentence Transcription</p>
+        <p className="text-slate-400 text-sm mb-3">Sentences</p>
         <span className={`inline-block text-xs font-semibold px-3 py-1 rounded-full border ${LEVEL_COLORS[level]}`}>{level}</span>
       </div>
 
@@ -3226,27 +3334,32 @@ Return ONLY this JSON:
           ) : (
             <div className="space-y-3">
               <p className="text-slate-400 text-xs uppercase tracking-widest">
-                {isPlaying ? 'Playing…' : 'Listen, then type what you heard'}
+                {isPlaying && !isPaused ? 'Playing…' : isPaused ? 'Paused' : 'Listen, then type what you heard'}
               </p>
-              <button
-                onClick={() => playCurrentSentence(currentIdx)}
-                disabled={isPlaying}
-                className={`w-16 h-16 mx-auto rounded-full flex items-center justify-center transition-all ${isPlaying ? 'bg-rose-500/30 scale-95' : 'bg-rose-500/20 hover:bg-rose-500/40 hover:scale-105 active:scale-95'} disabled:cursor-not-allowed`}
-              >
-                <svg viewBox="0 0 24 24" fill="currentColor" className={`w-8 h-8 ${isPlaying ? 'text-rose-300' : 'text-rose-400'}`}>
-                  <polygon points="5 3 19 12 5 21 5 3"/>
-                </svg>
-              </button>
+              <div className="flex items-center justify-center gap-3">
+                <button
+                  onClick={() => playCurrentSentence(currentIdx)}
+                  disabled={isPlaying && !isPaused}
+                  className={`w-16 h-16 rounded-full flex items-center justify-center transition-all ${isPlaying && !isPaused ? 'bg-rose-500/30 scale-95' : 'bg-rose-500/20 hover:bg-rose-500/40 hover:scale-105 active:scale-95'} disabled:cursor-not-allowed`}
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" className={`w-8 h-8 ${isPlaying && !isPaused ? 'text-rose-300' : 'text-rose-400'}`}>
+                    <polygon points="5 3 19 12 5 21 5 3"/>
+                  </svg>
+                </button>
+                {isPlaying && (
+                  <button
+                    onClick={handlePauseResume}
+                    className="w-10 h-10 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center transition-all"
+                  >
+                    {isPaused
+                      ? <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-slate-300"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                      : <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-slate-300"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                    }
+                  </button>
+                )}
+              </div>
             </div>
           )}
-          <button
-            onClick={handleReplay}
-            disabled={isPlaying}
-            className="flex items-center gap-2 mx-auto mt-3 text-xs text-slate-400 hover:text-slate-200 transition-colors disabled:opacity-40"
-          >
-            <div className="w-3.5 h-3.5"><Icons.RotateCcw /></div>
-            {phase === 'revealed' ? 'Replay sentence' : `Replay${replayCount > 0 ? ` (${replayCount})` : ''}`}
-          </button>
           <div className="flex items-center justify-center gap-3 mt-3 pt-3 border-t border-slate-700/30">
             <span className="text-xs text-slate-500">Speed</span>
             <button onClick={rateStepDown} className="w-7 h-7 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm font-bold flex items-center justify-center">−</button>
@@ -3539,8 +3652,6 @@ ${buildQSpec()}
   }, [phase]); // eslint-disable-line
 
   const handleReplay = () => {
-    if (replaysLeft <= 0) return;
-    setReplaysLeft(r => r - 1);
     playPassage();
   };
 
@@ -3551,15 +3662,13 @@ ${buildQSpec()}
 
     const qs = meta?.questions || [];
     const kp = meta?.keyPoints || [];
-    const replaysUsed = maxReplays - replaysLeft;
-
     const qLines = qs.map((q, i) => {
       const label = q.type === 'main_idea' ? 'Main idea' : q.type === 'inference' ? 'Inference' : 'Detail';
       return `${i+1}. [${label}] ${q.question}\n   → "${answers[i] || '(no answer)'}"`;
     }).join('\n\n');
 
     const system = `You are evaluating a Spanish listening comprehension exercise. Return ONLY valid JSON.`;
-    const prompt = `A ${level} CEFR Spanish learner listened to this passage at ${currentRate.toFixed(2)}× speed (${replaysUsed} of ${maxReplays} replays used).
+    const prompt = `A ${level} CEFR Spanish learner listened to this passage at ${currentRate.toFixed(2)}× speed.
 
 PASSAGE:
 ${passage}
@@ -3651,7 +3760,7 @@ Return ONLY this JSON (questionResults must have exactly ${numQ} entries):
       <div className="text-center py-2">
         <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 p-4 mx-auto mb-4"><Icons.Zap /></div>
         <h1 className="text-2xl font-bold text-white mb-1">Discurso</h1>
-        <p className="text-slate-400 text-sm mb-3">Stage 4 — Discourse</p>
+        <p className="text-slate-400 text-sm mb-3">Speeches & Dialogues</p>
         <span className={`inline-block text-xs font-semibold px-3 py-1 rounded-full border ${LEVEL_COLORS[level]}`}>{level}</span>
       </div>
 
@@ -3666,7 +3775,7 @@ Return ONLY this JSON (questionResults must have exactly ${numQ} entries):
           <div className="border-t border-slate-700/40 px-5 py-3 space-y-2.5">
             {[
               ['🎬', 'Listen to a passage — TV dialogue, film narration, or real conversation. Text is hidden.'],
-              ['🔁', maxReplays === 0 ? 'No replays at C1 — process in real time, just like native listening' : `You get ${maxReplays} replay${maxReplays > 1 ? 's' : ''} — use them carefully`],
+              ['🔁', 'Replay as many times as you need using the play button'],
               ['✍️', `Answer ${numQ} comprehension questions in English from memory`],
               ['🤖', 'Claude evaluates your answers and identifies exactly what broke down'],
             ].map(([icon, text]) => (
@@ -3682,8 +3791,8 @@ Return ONLY this JSON (questionResults must have exactly ${numQ} entries):
       {/* Info grid */}
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-slate-800/40 border border-slate-700/30 rounded-xl p-3 text-center">
-          <div className="text-xl font-bold text-amber-400">{maxReplays === 0 ? '—' : maxReplays}</div>
-          <div className="text-xs text-slate-400 mt-0.5">{maxReplays === 0 ? 'No replays' : `Replay${maxReplays > 1 ? 's' : ''} allowed`}</div>
+          <div className="text-xl font-bold text-amber-400">∞</div>
+          <div className="text-xs text-slate-400 mt-0.5">Replays allowed</div>
         </div>
         <div className="bg-slate-800/40 border border-slate-700/30 rounded-xl p-3 text-center">
           <div className="text-xl font-bold text-amber-400">{numQ}</div>
@@ -3776,23 +3885,18 @@ Return ONLY this JSON (questionResults must have exactly ${numQ} entries):
             }
           </button>
           <div className="text-center">
-            {maxReplays === 0
-              ? <div className="text-[10px] text-amber-600 font-semibold">C1 MODE<br/>No replays</div>
-              : <>
-                  <div className={`font-bold text-sm ${replaysLeft > 0 ? 'text-amber-400' : 'text-slate-600'}`}>{replaysLeft}</div>
-                  <div className="text-[10px] text-slate-500">replays left</div>
-                </>
-            }
+            <div className="font-bold text-sm text-amber-400">∞</div>
+            <div className="text-[10px] text-slate-500">replays</div>
           </div>
         </div>
 
         <p className="text-center text-amber-300/50 text-xs mt-4">
-          {isPlaying ? 'Playing — listen carefully' : hasPlayed ? (replaysLeft > 0 ? 'Replay or answer when ready' : 'Answer when ready') : 'Press play to begin'}
+          {isPlaying ? 'Playing — listen carefully' : hasPlayed ? 'Replay or answer when ready' : 'Press play to begin'}
         </p>
       </div>
 
       <div className="flex gap-2 flex-wrap">
-        {['No text shown during playback', `${numQ} comprehension questions`, maxReplays === 0 ? 'No replays — C1 mode' : `${maxReplays} replay${maxReplays > 1 ? 's' : ''} available`].map(tip => (
+        {['No text shown during playback', `${numQ} comprehension questions`, 'Unlimited replays'].map(tip => (
           <span key={tip} className="text-[11px] text-slate-500 bg-slate-800/60 border border-slate-700/40 rounded-lg px-2.5 py-1">{tip}</span>
         ))}
       </div>
@@ -4075,58 +4179,22 @@ function HomeScreen({ profile, updateProfile, sessions, onStartModule }) {
                   onStartModule(mod.id, selLvl);
                 }}
               >
-                <div className="flex items-start gap-3">
+                <div className="flex items-center gap-3">
                   <div className={`w-11 h-11 rounded-xl bg-gradient-to-br ${mod.color} p-2.5 flex-shrink-0`}><ModIcon /></div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-bold text-white text-base">{mod.title}</span>
-                      <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${mod.badge}`}>{mod.subtitle}</span>
-                    </div>
-                    {isPlacement ? (
-                      <p className="text-xs text-slate-400">
-                        Current level: <span className="text-slate-200 font-semibold">{profile.level}</span>
-                        <span className="text-slate-600 mx-1.5">·</span>
-                        <span className="text-slate-500 italic">Retake to recalibrate</span>
-                      </p>
-                    ) : st ? (
-                      <div className="flex items-center gap-2 text-xs text-slate-400 flex-wrap">
-                        <span>Last: <span className="text-slate-200 font-semibold">{st.lastLevel}</span></span>
-                        <span className="text-slate-600">·</span>
-                        <span>Avg <span className="text-slate-200 font-semibold">{st.avg}%</span></span>
-                        <span className="text-slate-600">·</span>
-                        <span><span className="text-slate-200 font-semibold">{st.total}</span> {st.total === 1 ? 'session' : 'sessions'}</span>
-                      </div>
-                    ) : (
-                      <p className="text-xs text-slate-500 italic">Not started yet</p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <div className={`w-10 h-10 rounded-full flex items-center justify-center bg-gradient-to-br ${mod.color} shadow-lg`}>
-                      <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-white ml-0.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                    </div>
-                    {isPlacement ? (
-                      <div className="w-10 h-10 rounded-full border-2 border-teal-500/40 bg-teal-500/10 flex items-center justify-center">
-                        <span className="text-teal-300 text-[10px] font-black">{profile.level}</span>
-                      </div>
-                    ) : st ? (
-                      <ScoreRing score={st.avg} size={40} />
-                    ) : (
-                      <div className="w-10 h-10 rounded-full border-2 border-dashed border-slate-700 flex items-center justify-center">
-                        <span className="text-slate-600 text-[10px] font-bold">NEW</span>
+                    <span className="font-bold text-white text-base">{mod.title}</span>
+                    {st && !isPlacement && (
+                      <div className="text-xs text-slate-500 mt-0.5">
+                        {st.total} {st.total === 1 ? 'session' : 'sessions'} · avg {st.avg}%
                       </div>
                     )}
+                    {!st && <p className="text-xs text-slate-600 mt-0.5 italic">Not started</p>}
                   </div>
+                  <div className={`w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-br ${mod.color} shadow-lg flex-shrink-0`}>
+                    <svg viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 text-white ml-0.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                  </div>
+                  {st && !isPlacement && <ScoreRing score={st.avg} size={40} />}
                 </div>
-
-                {/* Recommendation badge */}
-                {rec && (
-                  <div className="mt-2.5 ml-14">
-                    <div className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-semibold ${rec.color}`}>
-                      {rec.icon && <span>{rec.icon}</span>}
-                      {rec.text}
-                    </div>
-                  </div>
-                )}
               </button>
 
               {/* ── BOTTOM: level selector (training modules only) ── */}
@@ -4287,7 +4355,7 @@ function StudyPlan({ plan, savePlan, profile, sessions, apiKey, onNeedApiKey }) 
     const history = sorted.length
       ? sorted.map(s => {
           const d   = new Date(s.date).toLocaleDateString('en-US', { month:'short', day:'numeric' });
-          const mod = { placement:'Level Check', 'word-recognition':'Stage 2 Fonética', transcription:'Stage 3 Dictado', structure:'Stage 4 Estructura', discourse:'Stage 4 Discurso' }[s.module] || s.module;
+          const mod = { placement:'Vocab Level Test', 'word-recognition':'Words', transcription:'Sentences', structure:'Phrases', discourse:'Speeches & Dialogues' }[s.module] || s.module;
           const tags = s.weakTags?.length ? `weak: ${s.weakTags.join(', ')}` : 'no weak tags';
           return `• ${d} | ${mod} | Level ${s.level} | Score ${s.score}/100 | ${tags}`;
         }).join('\n')
@@ -4341,7 +4409,7 @@ Return ONLY this JSON structure:
 {
   "bottleneck": {
     "module": "vocabulary|structure|speed",
-    "stageLabel": "Stage 2 — Fonética|Stage 3 — Dictado|Stage 4 — Estructura|Stage 4 — Discurso",
+    "stageLabel": "Words|Phrases|Sentences|Speeches & Dialogues",
     "summary": "2-3 sentences: what the data shows, why this stage is the bottleneck, what specific patterns explain the low scores",
     "recurringWeakTags": ["exact weak tag strings from the session log — copy them verbatim"],
     "improvementNote": "One sentence noting any area showing improvement across sessions, or null if none"

@@ -216,6 +216,77 @@ function cleanChoice(raw) {
   return s.toLowerCase();
 }
 
+// ─── SHARED AUDIO ELEMENT + GESTURE UNLOCK ───────────────────────────────────
+// iOS Safari (and desktop Chrome under some settings) only allows play() calls
+// that originate from a user gesture. However, an <audio> element that has
+// played once inside a gesture stays "unlocked": its src can later be swapped
+// and play() called programmatically. So all playback goes through one shared
+// element, and the first tap anywhere (e.g. tapping a module card) plays a
+// tiny silent clip through it to unlock it.
+const audioUnlock = { el: null, unlocked: false, unlocking: false, silentUrl: null };
+
+function ensureSharedAudio() {
+  if (!audioUnlock.el) {
+    const a = new Audio();
+    a.preload = 'auto';
+    audioUnlock.el = a;
+  }
+  return audioUnlock.el;
+}
+
+function makeSilentWavUrl() {
+  // Minimal valid WAV: 44-byte header + 8 silent 16-bit samples @ 8kHz mono
+  const numSamples = 8, sampleRate = 8000;
+  const buf = new ArrayBuffer(44 + numSamples * 2);
+  const v = new DataView(buf);
+  const ws = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  ws(0, 'RIFF'); v.setUint32(4, 36 + numSamples * 2, true); ws(8, 'WAVE');
+  ws(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  ws(36, 'data'); v.setUint32(40, numSamples * 2, true);
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+
+function unlockAudio() {
+  if (audioUnlock.unlocked || audioUnlock.unlocking) return;
+  audioUnlock.unlocking = true;
+  const a = ensureSharedAudio();
+  try {
+    if (!audioUnlock.silentUrl) audioUnlock.silentUrl = makeSilentWavUrl();
+    const silentUrl = audioUnlock.silentUrl;
+    // Play UNMUTED — the clip is real silence. A muted play() is allowed
+    // without a gesture and would NOT bless the element on iOS; an unmuted
+    // play() only succeeds inside a genuine user gesture, which is exactly
+    // the blessing we need.
+    a.muted = false;
+    a.src = silentUrl;
+    const p = a.play();
+    if (p && p.then) {
+      p.then(() => {
+        // Only touch the element if real playback hasn't taken it over
+        if (a.src === silentUrl) a.pause();
+        audioUnlock.unlocked = true;
+        audioUnlock.unlocking = false;
+        console.log('[TTS] audio unlocked by user gesture');
+      }).catch(() => {
+        audioUnlock.unlocking = false; // retry on the next gesture
+      });
+    } else {
+      a.pause();
+      audioUnlock.unlocked = true;
+      audioUnlock.unlocking = false;
+    }
+  } catch (_) {
+    audioUnlock.unlocking = false;
+  }
+}
+
+// First tap/click anywhere counts — tapping a module card unlocks audio for
+// the autoplay that follows. No-ops once unlocked.
+document.addEventListener('touchend', unlockAudio, { capture: true, passive: true });
+document.addEventListener('click', unlockAudio, { capture: true });
+
 // ─── TTS HOOK (ElevenLabs via proxy) ─────────────────────────────────────────
 function useTTS() {
   const currentAudioRef = useRef(null); // currently playing Audio object
@@ -240,32 +311,39 @@ function useTTS() {
     return URL.createObjectURL(blob);
   }
 
+  // Resolves with 'done' when playback finished (or errored), or 'blocked'
+  // when the browser's autoplay policy rejected play() — callers can surface
+  // a tap-to-play prompt on 'blocked'.
   function playAudio(url, myGen) {
-    return new Promise((resolve, reject) => {
-      if (genRef.current !== myGen) { resolve(); return; }
-      const audio = new Audio();
+    return new Promise((resolve) => {
+      if (genRef.current !== myGen) { resolve('done'); return; }
+      // Reuse the gesture-unlocked shared element so programmatic play()
+      // works on iOS Safari after the user's first tap.
+      const audio = ensureSharedAudio();
+      audio.pause();
       // blob: URLs are same-origin — setting crossOrigin breaks them on Safari
-      if (!url.startsWith('blob:')) audio.crossOrigin = 'anonymous';
+      audio.crossOrigin = url.startsWith('blob:') ? null : 'anonymous';
       audio.preload = 'auto';
+      audio.muted = false;
       currentAudioRef.current = audio;
       console.log('[TTS] playing audio, gen', myGen, 'url', url.slice(-20));
-      audio.addEventListener('ended', () => { console.log('[TTS] audio ended, gen', myGen); resolve(); });
-      audio.addEventListener('error', (e) => { console.log('[TTS] audio error', e); resolve(); }); // resolve not reject — let sequence continue
+      // Property handlers (not addEventListener) so each playback replaces
+      // the previous one's callbacks on the shared element.
+      audio.onended = () => { console.log('[TTS] audio ended, gen', myGen); resolve('done'); };
+      audio.onerror = (e) => { console.log('[TTS] audio error', e); resolve('done'); }; // resolve not reject — let sequence continue
       const startPlay = () => {
+        if (genRef.current !== myGen) { resolve('done'); return; }
         audio.play().then(() => {
           console.log('[TTS] play() started, gen', myGen);
+          audioUnlock.unlocked = true; // a successful play also unlocks
         }).catch(err => {
-          console.warn('[TTS] play() rejected (Safari autoplay policy?)', err);
-          resolve(); // gracefully continue rather than break the sequence
+          console.warn('[TTS] play() rejected (autoplay policy?)', err);
+          resolve(err && err.name === 'NotAllowedError' ? 'blocked' : 'done');
         });
       };
       // Safari needs canplaythrough before play() is reliable
-      if (audio.readyState >= 3 /* HAVE_FUTURE_DATA */) {
-        startPlay();
-      } else {
-        audio.addEventListener('canplaythrough', startPlay, { once: true });
-      }
-      audio.src = url; // set src AFTER attaching listeners so no events are missed
+      audio.oncanplaythrough = () => { audio.oncanplaythrough = null; startPlay(); };
+      audio.src = url; // setting src (re)starts the load; canplaythrough follows
     });
   }
 
@@ -324,11 +402,17 @@ function useTTS() {
   }
 
   // Play a pre-fetched URL directly, respecting the generation counter.
-  const playUrlDirect = useCallback((url, onDone) => {
+  // onBlocked fires instead of onDone when the browser's autoplay policy
+  // rejected play() — the caller should show a tap-to-play prompt.
+  const playUrlDirect = useCallback((url, onDone, onBlocked) => {
     const myGen = ++genRef.current;
     if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current = null; }
     playAudio(url, myGen)
-      .then(() => { if (genRef.current === myGen) onDone?.(); })
+      .then((status) => {
+        if (genRef.current !== myGen) return;
+        if (status === 'blocked' && onBlocked) onBlocked();
+        else onDone?.();
+      })
       .catch(() => { if (genRef.current === myGen) onDone?.(); });
   }, []);
 
@@ -3511,6 +3595,8 @@ function DiscourseModule({ level, apiKey, onBack, addSession, onNeedApiKey }) {
   const [passage, setPassage]     = useState('');
   const [meta, setMeta]           = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isPaused, setIsPaused]   = useState(false);
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const [hasPlayed, setHasPlayed] = useState(false);
   const [replaysLeft, setReplaysLeft] = useState(0);
   const [answers, setAnswers]     = useState(() => Array(numQ).fill(''));
@@ -3525,7 +3611,7 @@ function DiscourseModule({ level, apiKey, onBack, addSession, onNeedApiKey }) {
   const nextRef        = useRef(null);
   const isPregenRef    = useRef(false);
   const topicIdxRef    = useRef(0);
-  const { speakSequence, cancel, fetchAudioStreaming, playUrlDirect } = useTTS();
+  const { speakSequence, cancel, fetchAudioStreaming, playUrlDirect, pauseAudio, resumeAudio } = useTTS();
   const { addItems, getRecent } = useContentHistory();
 
   const DISCOURSE_TOPICS = ['family','work','travel','food','health','weather','relationships','money','school','technology','sports','news','culture','humor'];
@@ -3606,6 +3692,7 @@ ${buildQSpec()}
     if (!apiKey) { onNeedApiKey(); return; }
     setPhase('generating');
     setErrorMsg(''); setHasPlayed(false); setShowPassage(false); setSessionResult(null);
+    setIsPaused(false); setAutoplayBlocked(false);
     if (audioUrlRef.current) { URL.revokeObjectURL(audioUrlRef.current); audioUrlRef.current = null; }
 
     const spec   = PASSAGE_SPECS[level];
@@ -3657,22 +3744,50 @@ ${buildQSpec()}
   }, [apiKey, level, passageLength, maxReplays, currentRate, fetchAudioStreaming, onNeedApiKey, numQ, getRecent, addItems]);
 
   // ── Playback ──
+  const estimateMs = useCallback(() => {
+    const words = (passage || '').split(/\s+/).length;
+    return (words / 155) * 60000 / currentRate * 1.35 + 2500;
+  }, [passage, currentRate]);
+
   const playPassage = useCallback(() => {
     if (!passage && !audioUrlRef.current) return;
     clearTimeout(playTimerRef.current);
+    setAutoplayBlocked(false);
+    setIsPaused(false);
     setIsPlaying(true);
-    const onDone = () => { setIsPlaying(false); setHasPlayed(true); };
+    const onDone = () => {
+      clearTimeout(playTimerRef.current);
+      setIsPlaying(false); setIsPaused(false); setHasPlayed(true);
+    };
+    const onBlocked = () => {
+      // Browser refused play() without a gesture — ask for one tap.
+      clearTimeout(playTimerRef.current);
+      setIsPlaying(false); setIsPaused(false);
+      setAutoplayBlocked(true);
+    };
     if (audioUrlRef.current) {
       // Use pre-fetched / streaming URL — no extra network round-trip
-      playUrlDirect(audioUrlRef.current, onDone);
+      playUrlDirect(audioUrlRef.current, onDone, onBlocked);
     } else {
       // Fallback: fetch fresh (shouldn't normally happen)
       speakSequence([{ text: passage, rate: currentRate }], onDone);
     }
-    const words = (passage || '').split(/\s+/).length;
-    const ms = (words / 155) * 60000 / currentRate * 1.35 + 2500;
-    playTimerRef.current = setTimeout(() => { setIsPlaying(false); setHasPlayed(true); }, ms);
-  }, [passage, currentRate, speakSequence, playUrlDirect]);
+    // Safety net in case 'ended' never fires
+    playTimerRef.current = setTimeout(() => { setIsPlaying(false); setIsPaused(false); setHasPlayed(true); }, estimateMs());
+  }, [passage, currentRate, speakSequence, playUrlDirect, estimateMs]);
+
+  const pausePlayback = useCallback(() => {
+    pauseAudio();
+    setIsPaused(true);
+    clearTimeout(playTimerRef.current);
+  }, [pauseAudio]);
+
+  const resumePlayback = useCallback(() => {
+    resumeAudio();
+    setIsPaused(false);
+    // Re-arm the safety net generously (full passage length again)
+    playTimerRef.current = setTimeout(() => { setIsPlaying(false); setIsPaused(false); setHasPlayed(true); }, estimateMs());
+  }, [resumeAudio, estimateMs]);
 
   // Auto-play as soon as we enter listening phase — audio is already ready.
   // Also kick off background pre-generation of the next passage.
@@ -3756,7 +3871,7 @@ Return ONLY this JSON (questionResults must have exactly ${numQ} entries):
     cancel(); clearTimeout(playTimerRef.current);
     isPregenRef.current = false; nextRef.current = null;
     if (audioUrlRef.current) { URL.revokeObjectURL(audioUrlRef.current); audioUrlRef.current = null; }
-    setPassage(''); setMeta(null); setIsPlaying(false); setHasPlayed(false);
+    setPassage(''); setMeta(null); setIsPlaying(false); setIsPaused(false); setAutoplayBlocked(false); setHasPlayed(false);
     setReplaysLeft(0); setAnswers(Array(numQ).fill(''));
     setSessionResult(null); setShowPassage(false);
     setErrorMsg(''); setSubmitError(''); setPhase('init');
@@ -3766,7 +3881,7 @@ Return ONLY this JSON (questionResults must have exactly ${numQ} entries):
     cancel(); clearTimeout(playTimerRef.current);
     const next = nextRef.current;
     isPregenRef.current = false; nextRef.current = null;
-    setIsPlaying(false); setHasPlayed(false); setShowPassage(false);
+    setIsPlaying(false); setIsPaused(false); setAutoplayBlocked(false); setHasPlayed(false); setShowPassage(false);
     setSessionResult(null); setErrorMsg(''); setSubmitError('');
     setAnswers(Array(numQ).fill(''));
     if (next) {
@@ -3919,7 +4034,7 @@ Return ONLY this JSON (questionResults must have exactly ${numQ} entries):
 
       {/* Waveform player */}
       <div className="bg-gradient-to-br from-amber-900/30 to-orange-900/30 border border-amber-500/20 rounded-2xl p-6">
-        <Waveform isPlaying={isPlaying} color="#f59e0b" />
+        <Waveform isPlaying={isPlaying && !isPaused} color="#f59e0b" />
 
         <div className="flex items-center justify-center gap-3 mt-5">
           <div className="flex flex-col items-center gap-1">
@@ -3928,16 +4043,19 @@ Return ONLY this JSON (questionResults must have exactly ${numQ} entries):
             <button onClick={rateStepUp} className="w-7 h-7 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm font-bold flex items-center justify-center">+</button>
           </div>
           <button
-            onClick={isPlaying ? () => {} : (hasPlayed ? handleReplay : playPassage)}
-            disabled={isPlaying || (hasPlayed && replaysLeft === 0)}
+            onClick={
+              isPlaying
+                ? (isPaused ? resumePlayback : pausePlayback)
+                : (hasPlayed ? handleReplay : playPassage)
+            }
+            disabled={!isPlaying && hasPlayed && replaysLeft === 0}
             className={`w-14 h-14 rounded-full flex items-center justify-center text-white font-bold transition-all ${
-              isPlaying ? 'bg-amber-600/50 cursor-not-allowed' :
-              hasPlayed && replaysLeft === 0 ? 'bg-slate-700 text-slate-500 cursor-not-allowed' :
+              !isPlaying && hasPlayed && replaysLeft === 0 ? 'bg-slate-700 text-slate-500 cursor-not-allowed' :
               'bg-amber-500 hover:bg-amber-400 active:scale-95'
             }`}
           >
-            {isPlaying
-              ? <div className="w-5 h-5 text-amber-200"><Icons.Volume /></div>
+            {isPlaying && !isPaused
+              ? <svg viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
               : <svg viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 ml-0.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
             }
           </button>
@@ -3947,8 +4065,20 @@ Return ONLY this JSON (questionResults must have exactly ${numQ} entries):
           </div>
         </div>
 
+        {autoplayBlocked && (
+          <button
+            onClick={playPassage}
+            className="slide-up w-full mt-5 bg-amber-500 hover:bg-amber-400 active:scale-[0.98] text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 transition-all"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Tap to Play
+          </button>
+        )}
+
         <p className="text-center text-amber-300/50 text-xs mt-4">
-          {isPlaying ? 'Playing — listen carefully' : hasPlayed ? 'Replay or answer when ready' : 'Press play to begin'}
+          {autoplayBlocked ? 'Your browser blocked autoplay — tap once to start'
+            : isPlaying ? (isPaused ? 'Paused — tap play to resume' : 'Playing — listen carefully')
+            : hasPlayed ? 'Replay or answer when ready' : 'Starting…'}
         </p>
       </div>
 
